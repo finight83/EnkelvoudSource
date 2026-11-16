@@ -308,39 +308,29 @@ inline void serviceRateLog() {
   if (!a2dpResampler) return;
   static int  lastLockedRate = -1;
   static bool lastLockedMode = false;
+  static bool lastRateKnown = false;
   int  rate = a2dpResampler->getDetectedInputRate();
   bool locked = a2dpResampler->isLocked();
-  if (locked && (!lastLockedMode || rate != lastLockedRate)) {
+  bool rateKnown = a2dpResampler->hasPeerRate();
+  if (locked && (!lastLockedMode || rate != lastLockedRate || rateKnown != lastRateKnown)) {
     // [log-honest-out-rate] Was g_currentI2sRateHz, which is a stale
     // 44100 since applyDetectedSourceRate() was removed from loop().
     // getOutputRate() returns _dstRate = SAMPLE_RATE = 48000, which is
     // what the resampler actually emits and what the I2S DMA is clocked
     // at. Without this fix the log prints "44100 -> 44100 (resampling)"
     // which is self-contradictory and made the whole log untrustworthy.
-    logLinef("A2DP rate locked: %d Hz -> %d Hz (%s)",
-             rate, a2dpResampler->getOutputRate(), a2dpResampler->getMode());
+    logLinef("A2DP rate: %d Hz -> %d Hz (%s, %s)",
+             rate, a2dpResampler->getOutputRate(), a2dpResampler->getMode(),
+             rateKnown ? "codec" : "assumed");
     lastLockedRate = rate;
     lastLockedMode = true;
+    lastRateKnown = rateKnown;
   } else if (!locked) {
     // Reset so a reconnect's fresh detection logs again.
     lastLockedRate = -1;
     lastLockedMode = false;
   }
 
-  // [rate-periodic-diag]
-  // Unconditional 10 s state log. This is the only source-side line
-  // present in the S3 server's 50-slot ring during a stall if the
-  // incident runs longer than the ring's ~30 s retention. It is what
-  // lets the operator tell "peer stopped sending" (sil large) from
-  // "rate misdetected" (in wrong, sil small) from "heap pressure"
-  // (freeH dropping) in a captured timeline.
-  //
-  // Fields:
-  //   in     = detected BT peer rate (0 = still detecting)
-  //   out    = target I2S rate (always SAMPLE_RATE)
-  //   mode   = detecting / passthrough / resampling
-  //   sil    = ms since the last write() call (0 = flowing now)
-  //   freeH  = free heap at log time (companion to HEAP watchdog)
   static uint32_t lastPeriodicMs = 0;
   uint32_t nowMs = millis();
   // [ratediag-60s-or-verbose] Was unconditional every 10 s. That cadence
@@ -353,15 +343,13 @@ inline void serviceRateLog() {
     lastPeriodicMs = nowMs;
     uint32_t lastWr = a2dpResampler->getLastWriteMs();
     uint32_t sil    = (lastWr == 0) ? 0 : (nowMs - lastWr);
-    // [ratediag-bufshort] Added bufShort to RATEDIAG so a future capture can
-    // prove or disprove the I2S backpressure hypothesis without a reflash.
-    // Non-zero means AudioTools dropped samples inside the resampler's
-    // downstream flush; the counter is monotonic lifetime, so read the
-    // delta between two consecutive RATEDIAG lines.
-    logLinef("RATEDIAG|in=%d out=%d mode=%s sil=%lu freeH=%lu bufShort=%lu",
+    logLinef("RATEDIAG|in=%d out=%d mode=%s rate=%s sil=%lu gapMax=%lu outMax=%lu bufShort=%lu dropped=%lu",
              rate, a2dpResampler->getOutputRate(), a2dpResampler->getMode(),
-             (unsigned long)sil, (unsigned long)ESP.getFreeHeap(),
-             (unsigned long)a2dpResampler->getBufShortWrites());
+             a2dpResampler->hasPeerRate() ? "codec" : "assumed",
+             (unsigned long)sil, (unsigned long)a2dpResampler->getMaxWriteGapMs(),
+             (unsigned long)a2dpResampler->getMaxOutputMs(),
+             (unsigned long)a2dpResampler->getBufShortWrites(),
+             (unsigned long)a2dpResampler->getDroppedBytes());
   }
 }
 
@@ -461,7 +449,7 @@ void setup() {
   // to multiOutput after rate conversion. 48 kHz is the S3 server's
   // SOURCE_SAMPLE_RATE; keeping the source at that rate avoids a resample
   // step on the server and lets it encode straight into Opus.
-  a2dpResampler = new A2DPRateResampler(*multiOutput, SAMPLE_RATE);
+  a2dpResampler = new A2DPRateResampler(*dac1I2s, SAMPLE_RATE);
   a2dpSink      = new BluetoothA2DPSink(*a2dpResampler);
   LOGI("  dac1I2s=%p  multiOutput=%p  a2dpResampler=%p  a2dpSink=%p",
        dac1I2s, multiOutput, a2dpResampler, a2dpSink);
@@ -479,6 +467,7 @@ void setup() {
        PIN_CMD_RX, PIN_CMD_TX, UART_BAUD);
 
   a2dpSink->set_on_connection_state_changed(connection_state_changed);
+  a2dpSink->set_sample_rate_callback(sample_rate_changed);
   a2dpSink->set_on_volumechange(volume_changed_callback);
   a2dpSink->set_auto_reconnect(true);
 
