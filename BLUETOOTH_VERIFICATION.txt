@@ -25,14 +25,26 @@ Rate changes should follow codec notifications, not the arrival cadence.
 sil is milliseconds since PCM last entered the adapter; gapMax is the largest
 inter-arrival gap since boot, including pauses and time spent in output.
 outMax is the longest downstream flush in milliseconds. These maxima and the
-bufShort and dropped counters are cumulative since boot. Rising bufShort
-indicates partial or zero downstream writes (which are retried); rising dropped
-means the output made no progress for 250 ms and audio was discarded. A large
+bufShort and dropped counters, and the rejected and discarded counters in the
+separate A2DPINPUT line, are cumulative since boot. Rising bufShort indicates
+partial or zero downstream writes. After 250 ms
+without progress, converted output is retained for retry, and write() accepts
+only the input prefix it owns. rejected counts unaccepted input bytes per
+attempt (including retries), not necessarily actual loss; the caller must retry
+only the unaccepted suffix. Some ESP32-A2DP versions retry short writes in a
+loop, so a persistent stall may block that task until output recovers. Verify
+the deployed library's behavior; it is not pinned in this repository. dropped
+counts pending output bytes discarded on reset; discarded counts incomplete
+input-frame bytes discarded on reset or a real rate change. A large
 outMax points to output backpressure, while a large sil with no corresponding
 output delay points to an inactive/stalled source. The maxima cannot attribute
 an old pause to a new stutter; reboot and reproduce for a clean baseline.
 The I2S driver itself may block in write; the timeout bounds only consecutive
 zero-return retries, not time spent inside the driver.
 
+The converter holds two input frames of lookahead; the tail cannot be output
+until more frames arrive. A rate change or reconnect starts a new interpolation
+segment, so the old segment's final lookahead is not extrapolated.
+
 The host-side conversion and short-write exercise can be run with:
-g++ -std=c++11 -Wall -Wextra -Werror -I tests tests/resampler_test.cpp -o /tmp/evdbt-resampler-test && /tmp/evdbt-resampler-test
+g++ -std=c++11 -Wall -Wextra -Werror -I tests tests/resampler_test.cpp -o evdbt-resampler-test && ./evdbt-resampler-test

@@ -350,6 +350,11 @@ inline void serviceRateLog() {
              (unsigned long)a2dpResampler->getMaxOutputMs(),
              (unsigned long)a2dpResampler->getBufShortWrites(),
              (unsigned long)a2dpResampler->getDroppedBytes());
+    if (a2dpResampler->getRejectedInputBytes() || a2dpResampler->getDiscardedInputBytes()) {
+      logLinef("A2DPINPUT|rejected=%lu discarded=%lu",
+               (unsigned long)a2dpResampler->getRejectedInputBytes(),
+               (unsigned long)a2dpResampler->getDiscardedInputBytes());
+    }
   }
 }
 
