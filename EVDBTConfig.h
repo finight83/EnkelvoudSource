@@ -42,26 +42,9 @@ static const int PIN_AUX_R = 35;
 // ---- Audio format ----------------------------------------------------------
 // I2S OUTPUT rate. BCLK = 48000 x 16 x 2 = 1.536 MHz.
 //
-// IMPORTANT: BluetoothA2DPSink does NOT resample. It forwards the peer's
-// SBC/AAC-decoded PCM rate to whatever Stream was passed in the constructor.
-// Every Windows peer negotiates 44.1 kHz SBC, so without an adapter the sink
-// would feed 44.1 kHz of data into a 48 kHz I2S DMA, causing an 8.8 %
-// underrun on every second (audible as stutter and a slight pitch-down).
-//
-// EVDBTResampler.h inserts an A2DPRateResampler between the sink and I2S.
-// It measures the peer's actual PCM rate over an 800 ms window after each
-// connect (short windows bias low on bursty Android jitter-buffer phases,
-// which was the "demon voice" bug), snaps the result to the nearest of
-// {96000, 88200, 48000, 44100, 32000, 24000, 22050, 16000, 8000} within
-// +/-3 %, and if no candidate matches after 10 s of passthrough falls back
-// to the raw measured rate rounded to 100 Hz. Once locked, a 500 ms rolling
-// window continuously EMA-tracks the peer rate: alpha 0.40 for >8 %
-// divergence (codec switch or wrong initial snap), alpha 0.20 for smaller
-// drift (crystal, BT PLL wander). Cubic Catmull-Rom interpolation converts
-// to SAMPLE_RATE whenever the tracked rate is more than 1 Hz from it.
-// A 44.1 kHz peer therefore arrives at the ESP32-S3 server as a clean
-// 48 kHz stream, and the server's SOURCE_SAMPLE_RATE stays at 48000 with
-// no downstream resampling.
+// The A2DP codec callback supplies the input rate; until it arrives the
+// adapter assumes 44.1 kHz and reports that assumption in RATEDIAG.
+// Cubic interpolation converts the decoded stereo PCM to this fixed rate.
 #define SAMPLE_RATE      48000
 #define CHANNELS         2
 #define BITS_PER_SAMPLE  16

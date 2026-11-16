@@ -254,35 +254,6 @@ inline void sendBtDeviceList() {
 // arithmetic, append with memcpy, write with putBytes. No String churn on
 // every connect.
 inline void handleDeviceConnected() {
-  // Restart rate detection for this peer. Peers vary (Windows 44.1 kHz,
-  // some Android 48 kHz, some 32 kHz); the previous peer's locked rate is
-  // not valid for this one. Belt-and-braces: handleDeviceDisconnected()
-  // also resets, but a peer that skipped a clean DISCONNECTED would leave
-  // stale state otherwise.
-  // [pc-rate-fix] Reset + set peer-type hint + try to lock the rate from
-  // the A2DP stack's negotiated value. If the library does not expose
-  // get_sample_rate(), remove that line — the constrained detection below
-  // still prevents the 16 kHz mis-lock.
-  if (a2dpResampler) {
-    // [detection-window-shipping-fix] reset() now defaults to 44.1 kHz
-    // and _rateLocked = true (see EVDBTResampler.h). Phase 2 switch
-    // detection stays armed, so a genuine 48 kHz peer corrects in ~1 s.
-    a2dpResampler->reset();
-    a2dpResampler->setPeerType(peerIsComputer);
-    // Pre-lock when the A2DP stack already knows the negotiated rate.
-    // sample_rate() returns m_sample_rate; 0 until the stream starts on
-    // many peers. When it does report 44100/48000, trust it — it disables
-    // Phase 2 detection and eliminates even the 1 s switch window.
-    int peerRate = (int)a2dpSink->sample_rate();
-    if (peerRate == 44100 || peerRate == 48000) {
-      a2dpResampler->setPeerRate(peerRate);
-      logLinef("Peer rate locked from A2DP stack: %d Hz", peerRate);
-    } else {
-      logLinef("Peer rate from A2DP stack invalid (%d Hz); "
-               "defaulting to 44100 Hz with Phase-2 detection armed",
-               peerRate);
-    }
-  }
   if (pendingPeerAddrValid) {
     currentConnectedMac = macToString(pendingPeerAddr);
   } else {
@@ -388,10 +359,6 @@ inline void handleDeviceDisconnected() {
   if (currentConnectedMac.length() == 0) {
     return;
   }
-  // Clear rate detection immediately on real disconnect: a fresh peer on
-  // the next connect must be measured from scratch. Safe to call from
-  // loop() context: reset() only writes single-word state.
-  if (a2dpResampler) a2dpResampler->reset();
   logLine("BT Disconnected.");
   // playDisconnectSound() intentionally NOT called (same I2S thread-safety
   // reason as the connect tone; even more likely to race because the sink
@@ -543,9 +510,14 @@ inline void volume_changed_callback(int vol) {
 }
 
 // ---- A2DP callbacks (BT task context - flag only) --------------------------
+inline void sample_rate_changed(uint16_t rate) {
+  if (a2dpResampler) a2dpResampler->setPeerRate(rate);
+}
+
 inline void connection_state_changed(esp_a2d_connection_state_t state, void*) {
   switch (state) {
     case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
+      if (a2dpResampler) a2dpResampler->reset();
       diagA2dpDisconnected++;
       avrcConnected = false;
       lastConnectMs    = 0;
@@ -707,18 +679,10 @@ inline void startBluetooth() {
   config1.pin_ws          = PIN_OUT1_LRC;
   config1.pin_data        = PIN_OUT1_DOUT;
   config1.is_master       = true;
-  // [pc-burst-headroom] Was 16 x 1024 = 16 KB = 91 ms at 44.1 kHz stereo.
-  // Windows A2DP delivers PCM in larger, jittery bursts than phones
-  // (typical PC: 40-100 ms gaps between chunks vs phone's steady ~20 ms).
-  // A single late PC burst drains the 91 ms ring, the BT task blocks in
-  // _dest.write(), the BT controller's input queue overflows, and the
-  // S3 sees a starving source — audible as intermittent stutter that a
-  // phone peer never triggers. 32 x 1024 = 32 KB = 182 ms absorbs one
-  // full PC jitter burst without ever blocking the BT task. Cost is
-  // 16 KB DRAM (ESP32 has 320 KB) and ~91 ms extra loop latency on the
-  // very first write; neither is user-visible.
+  // AudioTools' ESP32 I2S drivers interpret buffer_size as frames, not
+  // bytes. 32 x 256 stereo 16-bit frames is 32 KiB, about 171 ms at 48 kHz.
   config1.buffer_count    = 32;
-  config1.buffer_size     = 1024;
+  config1.buffer_size     = 256;
   bool ok = dac1I2s->begin(config1);
   if (!ok) {
     LOGE("I2S begin FAILED at buffer_count=32 - retrying 16");

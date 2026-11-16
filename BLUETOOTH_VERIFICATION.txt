@@ -1,0 +1,38 @@
+Bluetooth audio verification
+============================
+
+The changed firmware runs on the classic ESP32 source board, not the ESP32-S3
+server. Rebuild and flash the source board using the project's existing ESP32
+Arduino board configuration, custom partitions.csv, AudioTools and ESP32-A2DP
+libraries. The ESP32-A2DP version must provide set_sample_rate_callback().
+Keep build_opt.h enabled. The repository does not pin library or board versions;
+use the versions known to work with the deployed board. The S3 does not need
+to be reflashed. Open the source serial monitor at 115200 baud.
+
+Play continuous audio from a PC at each available A2DP rate (44.1 and 48 kHz),
+including tracks longer than several minutes, pauses/resumes and reconnects.
+Repeat with the TV and Android sources, including a 48 kHz source if available.
+Listen for pitch changes, periodic gaps, and clicks. Enable LOGLV:3 over the
+server UART to obtain RATEDIAG every 10 seconds (otherwise every 60 seconds).
+
+RATEDIAG reports the rate used by the converter, its 48 kHz output and whether
+the rate came from a codec notification (rate=codec) or the 44.1 kHz fallback
+(rate=assumed). Compare the input rate with the source/codec configuration.
+An assumed rate is not proof of negotiation; if it persists, check the
+ESP32-A2DP version and codec support before diagnosing output buffering.
+Rate changes should follow codec notifications, not the arrival cadence.
+
+sil is milliseconds since PCM last entered the adapter; gapMax is the largest
+inter-arrival gap since boot, including pauses and time spent in output.
+outMax is the longest downstream flush in milliseconds. These maxima and the
+bufShort and dropped counters are cumulative since boot. Rising bufShort
+indicates partial or zero downstream writes (which are retried); rising dropped
+means the output made no progress for 250 ms and audio was discarded. A large
+outMax points to output backpressure, while a large sil with no corresponding
+output delay points to an inactive/stalled source. The maxima cannot attribute
+an old pause to a new stutter; reboot and reproduce for a clean baseline.
+The I2S driver itself may block in write; the timeout bounds only consecutive
+zero-return retries, not time spent inside the driver.
+
+The host-side conversion and short-write exercise can be run with:
+g++ -std=c++11 -Wall -Wextra -Werror -I tests tests/resampler_test.cpp -o /tmp/evdbt-resampler-test && /tmp/evdbt-resampler-test
