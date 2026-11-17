@@ -142,7 +142,7 @@ inline void handleUartCommands() {
         logLine("  -> AVRCP PREV (0x4C)");
         requestAvrcKey(0x4C);
       } else if (starts(line, "SRC:")) {
-        logLinef("  -> setActiveSource(%s)", line + 4);
+        logLinef("  -> setActiveSource(%.8s)", line + 4);
         setActiveSource(String(line + 4));   // conversion happens once, rare
       } else if (starts(line, "LOGLV:") || starts(line, "CMD:LOGLV:")) {
         // "LOGLV:"      = 6 chars  -> digit starts at +6

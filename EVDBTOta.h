@@ -162,18 +162,16 @@ static inline bool otaHandleData(const char *args, char *errOut,
   int seq = atoi(args);
   *outSeq = seq;
 
-  // Idempotency: accept a duplicate of the last acked chunk and re-ack it.
-  if (seq == g_sourceOta.expectedSeq - 1) {
-    return true;
-  }
-  if (seq != g_sourceOta.expectedSeq) {
+  const bool isDup = (g_sourceOta.expectedSeq > 0 &&
+                      seq == g_sourceOta.expectedSeq - 1);
+  if (!isDup && seq != g_sourceOta.expectedSeq) {
     snprintf(errOut, errCap, "seq_exp_%d_got_%d",
              g_sourceOta.expectedSeq, seq);
     return false;
   }
 
   uint32_t offset = (uint32_t)strtoul(p1 + 1, nullptr, 16);
-  if (offset != g_sourceOta.bytesReceived) {
+  if (!isDup && offset != g_sourceOta.bytesReceived) {
     snprintf(errOut, errCap, "offset_exp_%u_got_%u",
              (unsigned)g_sourceOta.bytesReceived, (unsigned)offset);
     return false;
@@ -196,6 +194,9 @@ static inline bool otaHandleData(const char *args, char *errOut,
     return false;
   }
 
+  // Idempotency: a well-formed duplicate of the last acked chunk is re-acked
+  // without rewriting flash.
+  if (isDup) return true;
   size_t written = Update.write(decoded, decodedLen);
   if (written != decodedLen) {
     snprintf(errOut, errCap, "write_%u_%u",
