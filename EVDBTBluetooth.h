@@ -115,7 +115,21 @@ inline void playDisconnectSound() {
 // Entirely heap-free: reads the NVS list into one stack buffer and formats
 // the JSON in place with snprintf. One preferences.begin() per call (the
 // old code opened it twice). No String anywhere, no fragmentation.
+// Copies a MAC-like token keeping only [0-9A-Za-z:-] so it can never break
+// out of a JSON string.
+inline void copyJsonSafeMac(char *dst, size_t cap, const char *src, size_t len) {
+  size_t o = 0;
+  for (size_t i = 0; i < len && o + 1 < cap; i++) {
+    char c = src[i];
+    if (isalnum((unsigned char)c) || c == ':' || c == '-') dst[o++] = c;
+  }
+  dst[o] = '\0';
+}
+
 inline void sendBtDeviceList() {
+  char safeCur[24];
+  copyJsonSafeMac(safeCur, sizeof(safeCur), currentConnectedMac.c_str(),
+                  currentConnectedMac.length());
   // [bt-devlist-buf-512] 256 B held only 14 MACs (14*18=252 + NUL).
   // 512 B = 28 MACs, well above any realistic pair history.
   static char devListBuf[512];
@@ -131,7 +145,7 @@ inline void sendBtDeviceList() {
   static char out[1024];
   int len = snprintf(out, sizeof(out),
                      "BT_JSON|{\"activeMac\":\"%s\",\"devices\":[",
-                     currentConnectedMac.c_str());
+                     safeCur);
   if (len < 0) len = 0;
   if (len >= (int)sizeof(out)) len = (int)sizeof(out) - 1;
 
@@ -162,9 +176,11 @@ inline void sendBtDeviceList() {
       // and then bailed without appending "]}" — sending garbage to the
       // S3 which the parser discarded entirely, so the whole device
       // list vanished on overflow.
+      char safeMac[24];
+      copyJsonSafeMac(safeMac, sizeof(safeMac), devListBuf + macStart, (size_t)macLen);
       int w = snprintf(out + len, sizeof(out) - len - 3,
-                       "%s{\"mac\":\"%.*s\",\"vol\":%u,\"conn\":%s}",
-                       first ? "" : ",", macLen, devListBuf + macStart,
+                       "%s{\"mac\":\"%s\",\"vol\":%u,\"conn\":%s}",
+                       first ? "" : ",", safeMac,
                        curVol, isConn ? "true" : "false");
       if (w < 0 || len + w >= (int)sizeof(out) - 3) break;
       len += w;
@@ -225,7 +241,7 @@ inline void sendBtDeviceList() {
     "\"uartB\":%lu,\"uartOvf\":%lu,"
     "\"up\":%lu,\"heap\":%lu,\"minHeap\":%lu,\"maxBlock\":%lu,"
     "\"ticks\":%lu,\"srcCh\":%lu,\"hbAgo\":%ld,\"fw\":\"%s\"}",
-    currentConnectedMac.c_str(), (unsigned)activeBtVolume,
+    safeCur, (unsigned)activeBtVolume,
     a2dpSink && a2dpSink->is_connected() ? 1 : 0, avrcConnected ? 1 : 0,
     (unsigned long)diagA2dpConnected,
     (unsigned long)diagA2dpDisconnected,

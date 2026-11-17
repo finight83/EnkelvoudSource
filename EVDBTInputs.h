@@ -28,6 +28,10 @@ inline void setActiveSource(const String &src) {
     logLine("setActiveSource: empty name, ignored");
     return;
   }
+  if (s.length() > 8 || !(s == SOURCE_BT || s == SOURCE_AUX || s == SOURCE_USB)) {
+    logLine("setActiveSource: unknown source rejected");
+    return;
+  }
   if (s == activeSource) {
     logLine("setActiveSource: already " + s + ", ignored");
     return;

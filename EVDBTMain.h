@@ -467,6 +467,7 @@ void setup() {
   // HardwareSerial::begin returns void on the ESP32 core, so there is no
   // return value to check. If the UART link silently fails, it will show up
   // as `lastHeartbeatMs` staying 0 in serviceDiagLog()'s Heartbeat line.
+  cmdUart.setRxBufferSize(4096);   // must precede begin()
   cmdUart.begin(UART_BAUD, SERIAL_8N1, PIN_CMD_RX, PIN_CMD_TX);
   LOGI("UART: RX=%d TX=%d @ %d baud (link to S3 server)",
        PIN_CMD_RX, PIN_CMD_TX, UART_BAUD);
@@ -587,7 +588,7 @@ void loop() {
     }
   }
 
-  delay(5);
+  if (!g_sourceOta.receiving) delay(5);   // keep UART drained tightly during OTA
 }
 
 #endif // EVDBTMAIN_H
