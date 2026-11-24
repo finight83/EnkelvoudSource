@@ -16,6 +16,16 @@
 // ============================================================================
 #include "EVDBTHelpers.h"
 
+// [b1-aux-not-implemented] Tell the server why a switch was refused. The server
+// logs every SRCSTAT| line it receives, so "I picked AUX and nothing happened"
+// becomes a visible rejection instead of silence. EVDBTUart.h owns the port and
+// is included AFTER this file (see EnkelvoudSource.ino), so the definition
+// lives here and works with cmdUart directly.
+inline void uartReportSourceReject(const char *why) {
+  cmdUart.print("SRCSTAT|rejected|");
+  cmdUart.println(why ? why : "unsupported");
+}
+
 // ---- Source switch ---------------------------------------------------------
 // Called from the UART command handler when the S3 server pushes "SRC:<name>".
 // Startup default stays SOURCE_BT (set in EVDBTState.h); nothing else resets it.
@@ -53,9 +63,24 @@ inline void setActiveSource(const String &src) {
   if (s == SOURCE_BT) {
     logLine("  routing: BT (A2DP sink -> multiOutput, live)");
   } else if (s == SOURCE_AUX) {
-    logLine("  routing: AUX (STUB - A2DP still owns multiOutput)");
+    // [b1-aux-not-implemented]
+    // AUX used to be accepted here and then silently left A2DP owning
+    // multiOutput — the operator selected AUX on the dashboard and got
+    // whatever was on Bluetooth, or silence, with no error anywhere. Say so
+    // and refuse the switch, so the source stays on the input it is actually
+    // playing and the server's log shows why.
+    activeSource = prev;
+    logLine("  routing: AUX NOT IMPLEMENTED - source left at " + prev);
+    uartReportSourceReject("AUX not implemented on this board");
+    return;
   } else if (s == SOURCE_USB) {
-    logLine("  routing: USB (handled on the server, no-op here)");
+    // USB audio is the SERVER's own UAC device. The server never needs to ask
+    // this board to change anything, so a SRC:USB arriving here means the two
+    // ends disagree about who owns the source. Refuse it and stay put.
+    activeSource = prev;
+    logLine("  routing: USB is a SERVER-side input - source left at " + prev);
+    uartReportSourceReject("USB is a server-side input");
+    return;
   } else {
     logLine("  routing: UNRECOGNISED source name '" + s + "'");
   }

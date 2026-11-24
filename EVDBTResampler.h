@@ -80,6 +80,10 @@ public:
     // Lifetime counters remain comparable across reconnects.
     uint32_t getBufShortWrites()       const { return _bufShortWrites; }
     uint32_t getDroppedBytes()         const { return _droppedBytes; }
+    // [bt-writeout-budget] Times writeOutput() hit its 50 ms budget. Each one
+    // is a downstream stall that used to block the A2DP callback for up to
+    // 250 ms and cost a burst of source packets.
+    uint32_t getOutputTimeouts()       const { return _outputTimeouts; }
     uint32_t getRejectedInputBytes()   const { return _rejectedInputBytes; }
     uint32_t getDiscardedInputBytes()  const { return _discardedInputBytes; }
     uint32_t getMaxWriteGapMs()        const { return _maxWriteGapMs; }
@@ -141,12 +145,27 @@ private:
     volatile uint32_t _discardedInputBytes = 0;
     volatile uint32_t _maxWriteGapMs = 0;
     volatile uint32_t _maxOutputMs = 0;
+    volatile uint32_t _outputTimeouts = 0;   // [bt-writeout-budget]
 
     void clearInputState() {
         _inputFrames = _nextFrame = 0;
         _fraction = 0;
         _pcmBytes = 0;
     }
+
+    // [bt-writeout-budget]
+    // write() runs INSIDE the A2DP data callback. Blocking here for up to
+    // 250 ms stalls the Bluetooth stack's own consumer, which is exactly how
+    // a short downstream hiccup turns into dropped A2DP packets and the
+    // stutter reported from a PC source (a PC bursts harder and re-negotiates
+    // its codec more often than a phone, so it hits this far more often).
+    //
+    // The budget is now 50 ms. Crucially a timeout no longer throws the
+    // remainder away: _outOffset is left where it stopped and the unwritten
+    // suffix is retried on the next call (write() already documents that the
+    // tail survives a timeout, and [rejected-input-ownership] relies on it).
+    // Worst case that costs one call's worth of latency instead of a click.
+    static const uint32_t OUT_WRITE_BUDGET_MS = 50;
 
     bool writeOutput() {
         uint32_t started = millis();
@@ -160,10 +179,11 @@ private:
             if (written) {
                 _outOffset += written;
                 stalledSince = millis();
-            } else if ((uint32_t)(millis() - stalledSince) >= 250) {
+            } else if ((uint32_t)(millis() - stalledSince) >= OUT_WRITE_BUDGET_MS) {
                 uint32_t elapsed = millis() - started;
                 if (elapsed > _maxOutputMs) _maxOutputMs = elapsed;
-                return false;
+                ++_outputTimeouts;
+                return false;   // tail retained in _outBuf; retried next call
             } else {
                 delay(1);
             }

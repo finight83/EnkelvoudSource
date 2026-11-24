@@ -178,10 +178,20 @@ inline void handleUartCommands() {
       continue;
     }
     if (lineLen >= sizeof(line) - 1) {
+      // [b2-ota-nak-overflow]
+      // This used to just drop the bytes and log locally. The server, waiting
+      // for OTA_ACK|seq, saw nothing at all and retried the SAME chunk until
+      // its own timeout — three full re-uploads of the image per failed
+      // update. NAK with the sequence we were waiting for, so the server's
+      // existing NAK path resends a chunk that fits and the update continues
+      // from where it was instead of restarting.
       lineLen            = 0;
       discardUntilNewline = true;
       diagUartRxOverflow++;
-      logLine("UART RX overflow - discarding until newline");
+      cmdUart.print("OTA_NAK|");
+      cmdUart.print((long)g_sourceOta.expectedSeq);
+      cmdUart.println("|line_overflow");
+      logLine("UART RX overflow - NAKed, discarding until newline");
       continue;
     }
     line[lineLen++] = c;

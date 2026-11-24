@@ -350,10 +350,16 @@ inline void serviceRateLog() {
              (unsigned long)a2dpResampler->getMaxOutputMs(),
              (unsigned long)a2dpResampler->getBufShortWrites(),
              (unsigned long)a2dpResampler->getDroppedBytes());
-    if (a2dpResampler->getRejectedInputBytes() || a2dpResampler->getDiscardedInputBytes()) {
-      logLinef("A2DPINPUT|rejected=%lu discarded=%lu",
+    // [bt-writeout-budget] outTimeouts is logged unconditionally: it is the
+    // counter that tells you whether the downstream I2S write is blocking the
+    // A2DP callback, which is the mechanism behind PC-source stutter.
+    if (a2dpResampler->getRejectedInputBytes() ||
+        a2dpResampler->getDiscardedInputBytes() ||
+        a2dpResampler->getOutputTimeouts()) {
+      logLinef("A2DPINPUT|rejected=%lu discarded=%lu outTimeouts=%lu",
                (unsigned long)a2dpResampler->getRejectedInputBytes(),
-               (unsigned long)a2dpResampler->getDiscardedInputBytes());
+               (unsigned long)a2dpResampler->getDiscardedInputBytes(),
+               (unsigned long)a2dpResampler->getOutputTimeouts());
     }
   }
 }

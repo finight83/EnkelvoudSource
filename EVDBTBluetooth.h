@@ -142,6 +142,14 @@ inline void sendBtDeviceList() {
   // [bt-list-buf-1024] 512 overflowed at 9 paired devices: header (~48 B)
   // + 9 * ~55 B = 543 B. When the snprintf below returned w >= remaining,
   // the loop broke and sent truncated JSON, which the S3 parser dropped.
+  //
+  // [bt-list-buf-cross-repo] THIS BUFFER IS A CROSS-REPO CONTRACT with
+  // EnkelvoudServer/EVDPlayers.h's rxLine[]. The S3 reads the whole line
+  // "BT_JSON|" + out into a fixed buffer and DROPS the line if it does not
+  // fit. The server's buffer is BT_LINE_MAX = 1032 (8-byte prefix + this
+  // 1024-byte payload). If you grow `out` here, grow BT_LINE_MAX there in
+  // the same change, or the device list silently freezes on the dashboard
+  // once enough devices are paired.
   static char out[1024];
   int len = snprintf(out, sizeof(out),
                      "BT_JSON|{\"activeMac\":\"%s\",\"devices\":[",
@@ -285,9 +293,24 @@ inline void handleDeviceConnected() {
   // lastConnectMs / volEventReceived / volFallbackAtMs are set in
   // connection_state_changed() so they cover pre-loop volume events.
 
-  activeBtVolume = CONNECT_FORCED_VOLUME;
+  // [bt-connect-volume-passthrough]
+  // The connect volume is a TV/phone workaround, not a general rule. Those
+  // peers ignore the sink's volume until their own remote is touched, so a
+  // low connect volume was used to make "nothing happened" obvious and
+  // audible. A PC is the opposite case: Windows sends an absolute-volume
+  // event on connect and again on every slider move, and starting at 13/127
+  // makes the first thing the user hears a level jump that reads as a
+  // fault — and, when the event races the connect, as a dropout.
+  //
+  // So: pass through at unity for a recognised computer, keep the 10%
+  // + fallback dance for everything else. The fallback in
+  // serviceVolumeFallback() already refuses to touch a COMPUTER peer, so
+  // the two paths agree.
+  activeBtVolume = peerIsComputer ? 127 : CONNECT_FORCED_VOLUME;
   a2dpSink->set_volume(activeBtVolume);
-  logLine("BT volume set to 10% (13/127)");
+  logLinef("BT volume set to %u/127 (%s)", (unsigned)activeBtVolume,
+           peerIsComputer ? "COMPUTER passthrough"
+                          : "non-computer, 10% then fallback");
 
   // playConnectSound() intentionally NOT called. It would write to dac1I2s
   // while the A2DP writer is pushing frames into the same I2SStream through
@@ -465,21 +488,17 @@ inline void removeBtDevice(const char *macToRemove) {
 }
 
 // ---- A2DP callbacks (BT task context - flag only) --------------------------
-// Connect policy: force 10% (13/127) once on connect, then honour the device's
-// own volume changes.
+// Connect policy:
+//   * COMPUTER peer — pass through. Connect at unity (127) and apply every
+//     AVRCP volume the host sends. [bt-connect-volume-passthrough]
+//   * everything else (phone, TV) — force 10% (13/127) once on connect, then
+//     honour the device's own volume changes, with the unity fallback in
+//     serviceVolumeFallback() if no real event ever arrives.
 //
-// Two things force the extra machinery below:
-//   1. Windows sends SetAbsoluteVolume(127) on every connect. The BT stack
-//      applies that to the sink's internal volume BEFORE this callback runs,
-//      so returning early is not enough — we must call set_volume(13) to
-//      force the internal state back.
-//   2. Windows retries 127 for several seconds after the first rejection, so
-//      the hold window is wide (PC_VOL_HOLD_MS = 10 s) and every suppressed
-//      127 re-asserts 13.
-//
-// Phone / TV paths are unaffected: the phone sends its remembered value (not
-// 127, usually), which is applied normally; the TV sends nothing, so the
-// fallback fires at CONNECT_VOL_FALLBACK_MS as before.
+// The suppression machinery below is only needed for the non-computer path
+// now: a PC sends SetAbsoluteVolume on connect and again on every slider
+// move, and forcing it back to 13 mid-stream is heard as a dropout, so a
+// COMPUTER peer is deliberately exempt from rule (1) and (2).
 static volatile bool inVolumeApply = false;
 
 inline void volume_changed_callback(int vol) {
@@ -496,20 +515,24 @@ inline void volume_changed_callback(int vol) {
     return;
   }
 
-  // 2) PC's initial/max sync. Windows sends 127 on every connect. But ONLY
-  //    for PC peers: a phone that reconnects with its own volume already at
-  //    max also sends 127, and a phone sends AVRCP volume only ONCE per
-  //    connection. Suppressing that single event leaves the phone at 10%
-  //    for the whole session, which is the "sounds quiet" report.
-  //    Gate on peerIsComputer, matching the comment's intent.
-  if (peerIsComputer && sinceConnect < PC_VOL_HOLD_MS && vol == 127) {
+  // 2) Non-computer peers only: a phone that reconnects with its own volume
+  //    already at max also sends 127, and a phone sends AVRCP volume only
+  //    ONCE per connection. Suppressing that single event would leave the
+  //    phone at 10% for the whole session (the "sounds quiet" report), so it
+  //    is applied normally — this branch exists for the TV/other cases where
+  //    127 arrives as an echo of the connect volume.
+  //
+  //    [bt-connect-volume-passthrough] A COMPUTER peer is exempt: its 127 is
+  //    the real host volume, and re-forcing 13 in the middle of a stream is
+  //    a level jump the user hears as a fault.
+  if (!peerIsComputer && sinceConnect < PC_VOL_HOLD_MS && vol == 127) {
     inVolumeApply = true;
     a2dpSink->set_volume(CONNECT_FORCED_VOLUME);
     inVolumeApply = false;
     activeBtVolume   = CONNECT_FORCED_VOLUME;
     volEventReceived = true;
     volFallbackAtMs  = 0;
-    btLogPush("AVRCP vol IGNORED (PC max, forced back to 13)", vol);
+    btLogPush("AVRCP vol IGNORED (max echo, held at 13)", vol);
     return;
   }
 
