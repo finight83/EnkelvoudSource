@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-#define EVD_FW_VERSION "2.1.0.3" // 
+#define EVD_FW_VERSION "2.1.0.4" // Bug fixes
 
 // ---- Static-init probe -----------------------------------------------------
 // Runs before setup() and before any of the audio pipeline globals are
