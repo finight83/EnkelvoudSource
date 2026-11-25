@@ -462,10 +462,14 @@ void setup() {
   // step on the server and lets it encode straight into Opus.
   a2dpResampler = new A2DPRateResampler(*dac1I2s, SAMPLE_RATE);
   a2dpSink      = new BluetoothA2DPSink(*a2dpResampler);
-  LOGI("  dac1I2s=%p  multiOutput=%p  a2dpResampler=%p  a2dpSink=%p",
-       dac1I2s, multiOutput, a2dpResampler, a2dpSink);
+  // [tone-stream] Second sink for the connect/disconnect tone. See
+  // EVDBTState.h for why it is a VolumeStream on multiOutput rather than a
+  // direct write to dac1I2s.
+  toneVolume    = new VolumeStream();
+  LOGI("  dac1I2s=%p  multiOutput=%p  a2dpResampler=%p  a2dpSink=%p  tone=%p",
+       dac1I2s, multiOutput, a2dpResampler, a2dpSink, toneVolume);
 
-  if (!dac1I2s || !multiOutput || !a2dpResampler || !a2dpSink) {
+  if (!dac1I2s || !multiOutput || !a2dpResampler || !a2dpSink || !toneVolume) {
     LOGE("Audio pipeline allocation FAILED - halting");
     while (true) { delay(1000); }
   }

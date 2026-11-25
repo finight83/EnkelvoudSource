@@ -65,18 +65,75 @@ inline void drainBtLogQueue() {
   }
 }
 
-// ---- Connect / disconnect sounds (DISABLED) --------------------------------
-// [tone-dead-code-guarded]
+// ---- Connect / disconnect tones --------------------------------------------
+// [tone-stream] There IS a connect tone, and it goes through multiOutput, not
+// into dac1I2s. The old implementation (kept below behind #if 0 for the
+// history) wrote straight to the I2SStream while the A2DP writer was pushing
+// frames into the same object. I2SStream is not thread-safe, so the two writers
+// corrupted the DMA ring and the peer dropped the link within seconds - that is
+// why the calls were removed and the code disabled.
+//
+// The fix is not a mutex: it is to give the tone its own sink in multiOutput.
+// MultiOutput::write() copies the buffer once and hands the same block to every
+// sink in order, so the tone and the audio are serialised by construction and
+// can never interleave. toneVolume (a VolumeStream) scales only the tone.
+//
+// LEVEL: the tone is played over 50 W speakers, so it must stay quiet. It is
+// scaled to TONE_LEVEL (8% of full scale) AND the VolumeStream is set to
+// TONE_GAIN. Do NOT raise either - the operator's words: "don't increase the
+// volume because it's played over 50w speakers so is much too loud if higher".
+static const float    TONE_LEVEL       = 0.08f;    // per-sample amplitude
+static const float    TONE_GAIN        = 0.10f;    // VolumeStream factor
+static const uint32_t TONE_CONNECT_MS  = 180;
+static const uint32_t TONE_DISCON_MS   = 180;
+static const float    TONE_CONNECT_HZ  = 1000.0f;
+static const float    TONE_DISCON_HZ   = 500.0f;
+static const uint32_t TONE_RAMP_MS     = 5;        // no click at either end
+
+// Synthesises one tone and pushes it through toneVolume -> multiOutput.
+// Runs on whichever task calls it (the A2DP/BT callback task on connect).
+// Blocking is acceptable here: the caller is a BT event handler, not the audio
+// data callback, and 180 ms of a quiet sine costs nothing.
+inline void playTone(float freq, uint32_t durationMs) {
+  if (!toneVolume || !multiOutput) return;
+  const int channels = CHANNELS;
+  const size_t chunkSamples = 128;                 // frames per write
+  int16_t buf[chunkSamples * channels];
+  const uint32_t total = (SAMPLE_RATE * durationMs) / 1000;
+  const uint32_t ramp = (SAMPLE_RATE * TONE_RAMP_MS) / 1000;
+  for (uint32_t done = 0; done < total; done += chunkSamples) {
+    size_t n = (total - done < chunkSamples) ? (total - done) : chunkSamples;
+    for (size_t j = 0; j < n; ++j) {
+      const uint32_t i = done + (uint32_t)j;
+      // Linear fade in and out over TONE_RAMP_MS. Without it the first and
+      // last sample are a step to and from zero, which is a click.
+      float env = 1.0f;
+      if (ramp && i < ramp) env = (float)i / (float)ramp;
+      if (ramp && total - i <= ramp) env = (float)(total - i) / (float)ramp;
+      const float t = (float)i / (float)SAMPLE_RATE;
+      const int16_t v = (int16_t)(sinf(2.0f * (float)PI * freq * t) *
+                                  32767.0f * TONE_LEVEL * env);
+      for (int c = 0; c < channels; ++c) buf[j * channels + c] = v;
+    }
+    toneVolume->write((uint8_t *)buf, n * channels * sizeof(int16_t));
+  }
+  // Drop the rest of the DMA buffer to silence so the tone does not leave a
+  // DC tail behind it on the way to the server.
+  toneVolume->writeSilence((size_t)SAMPLE_RATE * channels * sizeof(int16_t) / 100);
+}
+
+inline void playConnectSound()    { playTone(TONE_CONNECT_HZ, TONE_CONNECT_MS); }
+inline void playDisconnectSound() { playTone(TONE_DISCON_HZ,  TONE_DISCON_MS); }
+
+// ---- Old implementation (disabled, kept for the reason above) --------------
 // These functions write directly to dac1I2s while the A2DP writer is pushing
 // frames into the same I2SStream through multiOutput. AudioTools::I2SStream
 // is not thread-safe; a concurrent write corrupts the DMA ring and the peer
 // drops the link within a few seconds. This was the reason the calls in
-// handleDeviceConnected()/handleDeviceDisconnected() were removed. Keep the
-// implementation behind #if 0 so nobody can re-enable the call sites by
-// accident — un-#if 0 only if the tone is being routed to a separate
-// I2SStream on a spare peripheral.
+// handleDeviceConnected()/handleDeviceDisconnected() were removed.
+// [tone-stream] superseded this: the tone now has its own multiOutput sink.
 #if 0
-inline void playTone(float freq, uint32_t durationMs) {
+inline void playToneLegacy(float freq, uint32_t durationMs) {
   if (!dac1I2s) return;
   const int channels = CHANNELS;
   const int bufferSize = 256;
@@ -100,14 +157,6 @@ inline void playTone(float freq, uint32_t durationMs) {
     }
     dac1I2s->write((uint8_t*)buffer, (size_t)count * channels * sizeof(int16_t));
   }
-}
-
-inline void playConnectSound() {
-  playTone(1000.0, 200);
-}
-
-inline void playDisconnectSound() {
-  playTone(500.0, 200);
 }
 #endif  // [tone-dead-code-guarded]
 
@@ -312,12 +361,11 @@ inline void handleDeviceConnected() {
            peerIsComputer ? "COMPUTER passthrough"
                           : "non-computer, 10% then fallback");
 
-  // playConnectSound() intentionally NOT called. It would write to dac1I2s
-  // while the A2DP writer is pushing frames into the same I2SStream through
-  // multiOutput. AudioTools::I2SStream is not thread-safe; a concurrent
-  // write corrupts the DMA ring and the peer drops the link within a few
-  // seconds. Re-enable only if the tone is routed to a separate I2SStream
-  // on a spare peripheral.
+  // [tone-stream] The connect tone IS played, through its own multiOutput
+  // sink (toneVolume), so it is serialised with the A2DP writes instead of
+  // racing them. Called after set_volume() so the peer's own volume is
+  // already settled and the tone is not mistaken for a level jump.
+  playConnectSound();
 
   // [devlist-storage-type-consistent]
   // All THREE functions that touch "dev_list" MUST use the SAME NVS
@@ -399,9 +447,11 @@ inline void handleDeviceDisconnected() {
     return;
   }
   logLine("BT Disconnected.");
-  // playDisconnectSound() intentionally NOT called (same I2S thread-safety
-  // reason as the connect tone; even more likely to race because the sink
-  // is often still draining the last frames into dac1I2s at this moment).
+  // [tone-stream] The disconnect tone IS played, for the same reason it is
+  // now safe: it goes through multiOutput, which serialises every sink in
+  // one write() call. This is the case that used to be the most dangerous -
+  // the sink is often still draining the last A2DP frames right now - and
+  // the ordering MultiOutput gives us is exactly what fixes it.
   currentConnectedMac = "";
   sendBtDeviceList();
 }
@@ -733,8 +783,21 @@ inline void startBluetooth() {
     return;
   }
 
+  // [tone-stream] Two sinks, one write() path. dac1I2s carries the audio at
+  // unity; toneVolume carries the connect/disconnect tone at TONE_GAIN, so
+  // the tone can be made quiet without attenuating anything else. The audio
+  // path reaches dac1I2s through a2dpResampler -> multiOutput as before, so
+  // adding a second sink changes nothing about how audio sounds.
   multiOutput->clear();
   multiOutput->add(*dac1I2s);
+  if (toneVolume) {
+    toneVolume->setOutput(*dac1I2s);
+    toneVolume->setVolume(TONE_GAIN);
+    toneVolume->begin();
+    multiOutput->add(*toneVolume);
+    logLinef("tone: connect/disconnect sound enabled at %.0f%% of %.0f%%",
+             (double)(TONE_GAIN * 100.0f), (double)(TONE_LEVEL * 100.0f));
+  }
 
   a2dpSink->start("Enkelvoud");
   a2dpRunning = true;

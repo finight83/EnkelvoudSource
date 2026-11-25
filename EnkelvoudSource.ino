@@ -1,7 +1,6 @@
 #include <Arduino.h>
-// Always update this field with latest patch updates
-#define EVD_FW_VERSION "2.1.0.4" 
-// Bug fixes
+
+#define EVD_FW_VERSION "2.1.0.4" // connect/disconnect tone restored via a quiet multiOutput sink
 
 // ---- Static-init probe -----------------------------------------------------
 // Runs before setup() and before any of the audio pipeline globals are

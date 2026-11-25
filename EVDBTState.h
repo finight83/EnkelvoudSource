@@ -33,7 +33,18 @@ BluetoothA2DPSink *a2dpSink = nullptr;
 // wherever state is queried (e.g. serviceRateLog in EVDBTMain.h,
 // handleDeviceDisconnected in EVDBTBluetooth.h).
 class A2DPRateResampler;
-A2DPRateResampler *a2dpResampler = nullptr;
+A2DPRateResampler *a2dpResampler = nullptr;
+
+// [tone-stream] The connect/disconnect tone needs its OWN route into dac1I2s.
+// It cannot write to the I2SStream directly: the A2DP writer is already
+// pushing frames into it, I2SStream is not thread-safe, and a concurrent
+// write corrupts the DMA ring - which is why the old playTone() was disabled
+// in EVDBTBluetooth.h. Instead a second, quieter output is added to
+// multiOutput, so the tone goes through the SAME write() call as the audio
+// and can never interleave with it. VolumeStream scales the tone without
+// touching the audio path: the tone is played over a 50 W amp and anything
+// near full scale is far too loud.
+VolumeStream  *toneVolume = nullptr;
 
 // ---- Infrastructure --------------------------------------------------------
 HardwareSerial cmdUart(2);
