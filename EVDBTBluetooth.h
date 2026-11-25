@@ -452,6 +452,7 @@ inline void handleDeviceDisconnected() {
   // one write() call. This is the case that used to be the most dangerous -
   // the sink is often still draining the last A2DP frames right now - and
   // the ordering MultiOutput gives us is exactly what fixes it.
+  playDisconnectSound();
   currentConnectedMac = "";
   sendBtDeviceList();
 }
